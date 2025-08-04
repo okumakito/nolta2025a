@@ -1,0 +1,17 @@
+﻿from,to
+BMI,bmi
+腹囲,wc
+空腹時血糖,fpg
+HbA1C,hba1c
+収縮期血圧,sbp
+拡張期血圧,dbp
+中性脂肪,tg
+ＨＤＬ,hdl
+ＬＤＬ,ldl
+ＧＯＴ,ast
+ＧＰＴ,alt
+γ－ＧＴＰ,ggtp
+ヘモグロビン,hb
+随時血糖,nfpg
+血清クレアチニン,cre
+eGFR,egfr
