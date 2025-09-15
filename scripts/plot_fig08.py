@@ -1,33 +1,56 @@
-def sub_plot_fig08(f, v0, n):
-  n_step  = 2*10**4   # times steps
-  n_cut   = 1000      # times steps to be cut
-  dt      = 0.01      # delta t
+def plot_fig08():
+  n       = 80        # number of states
+  n_grid  = 100       # number of grid points for potential
+  n_trial = 100       # number of trials
+  n_each  = 100-1     # times steps for each trial
+  dt      = 0.001     # delta t
+  sigma = 0.8         # noise intensity
+  c1 = 0.0005         # regularization parameter 1
+  c2 = 0.0005         # regularization parameter 2
+  dy = -1/n_each/dt
   epsilon = 1e-10
+  np.random.seed(123)
 
-  # simulation
-  v = v0
-  out_list = [v]
-  for _ in range(n_step):
-    v1 = f(v)
-    v2 = f(v+0.5*dt*v1)
-    v3 = f(v+0.5*dt*v2)
-    v4 = f(v+dt*v3)
-    v = v + dt*(v1+2*v2+2*v3+v4)/6
-    out_list.append(v)
-  v_df = pd.DataFrame(out_list[n_cut:], columns=list('xyz'))
+  # potential function
+  xx_arr = np.linspace(0, 1, n_grid)
+  X, Y = np.meshgrid(xx_arr, xx_arr)
+  yy_arr = xx_arr.reshape(-1,1)
+  U = np.clip(2*yy_arr-1,0,None) * np.cos(2*np.pi*xx_arr) +\
+    (1-np.abs(2*yy_arr-1)) * np.cos(2*np.pi*2*xx_arr) +\
+    np.clip(1-2*yy_arr,0,None) * np.cos(2*np.pi*4*xx_arr)
+
+  # time series
+  v0 = np.array([0.5,1])
+  sigma2  = sigma * dt**0.5
+  def f(v):
+    x, y = v
+    dx = 2 * np.pi * (np.max([2*y-1,0]) * 1 * np.sin(2*np.pi*x) +
+                      (1-np.abs(2*y-1)) * 2 * np.sin(2*np.pi*2*x) +
+                      np.max([1-2*y,0]) * 4 * np.sin(2*np.pi*4*x))
+    return np.array([dx, dy])
+  v_list = []
+  for _ in range(n_trial):
+    v = v0.copy()
+    out_list = [v]
+    for _ in range(n_each):
+      v = v + f(v) * dt + [sigma2 * np.random.randn(), 0]
+      v = np.clip(v, 0, 1)
+      out_list.append(v)
+    v_list.append(np.array(out_list))
+  v_arr = np.concatenate(v_list)
 
   # discretized time series
   model = KMeans(n_clusters=n, random_state=0, n_init='auto')
-  model.fit(v_df)
-  v_df['xd'] = model.predict(v_df)
-  c_df = pd.DataFrame(model.cluster_centers_, columns=list('xyz'))
+  model.fit(v_arr)
+  v_df = pd.DataFrame(v_arr, columns=list('xy'))
+  v_df['xd'] = model.predict(v_arr)
+  v_df['trial'] = np.repeat(np.arange(n_trial), n_each+1)
+  c_df = pd.DataFrame(model.cluster_centers_, columns=list('xy'))
 
-  # sort index
-  Z = linkage(c_df, metric='euclidean', method='ward')
-  sr = pd.Series(leaves_list(Z).argsort())
-  v_df['xd'] = v_df.xd.replace(sr)
-  c_df = c_df.iloc[leaves_list(Z)].reset_index(drop=True)
-  
+  # voronoi partition
+  v_dummy = np.array([[-1,-1],[-1,2],[2,-1],[2,2]])
+  vor = Voronoi(np.vstack([c_df[['x','y']], v_dummy]))
+
   # transition matrix
   df = pd.DataFrame()
   df['src'] = v_df.xd.values[:-1]
@@ -38,137 +61,139 @@ def sub_plot_fig08(f, v0, n):
   A = df.values
   p_arr = calc_stationary(A)
 
-  # return
-  return v_df, c_df, A, p_arr
-
-def plot_fig08():
-  n       = 50        # number of states
-  c1_lo   = 0.01      # regularization parameter 1, Lorenz
-  c2_lo   = 0.01      # regularization parameter 2, Lorenz
-  c1_rs   = 0.002     # regularization parameter 1, Rossler
-  c2_rs   = 0.002     # regularization parameter 2, Rossler
-  n_color = 10        # number of colors
-
-  # Lorentz attractor
-  rho = 28
-  sigma = 10
-  beta = 8/3
-  v0_lo = np.array([0,1,10])
-  def f_lo(v):
-    x, y, z = v
-    return np.array([sigma*(y-x), x*(rho-z)-y, x*y-beta*z])
-
-  # Rossler attractor
-  a = 0.1
-  b = 0.1
-  c = 14
-  v0_rs = np.array([10,10,0])
-  def f_rs(v):
-    x, y, z = v
-    return np.array([-y-z, x+a*y, b+z*(x-c)])
-
-  # sub func
-  v1_df, c1_df, A1, p1_arr = sub_plot_fig08(f_lo, v0_lo, n)
-  v2_df, c2_df, A2, p2_arr = sub_plot_fig08(f_rs, v0_rs, n)
+  # no reset
+  if False:
+    df2 = pd.DataFrame()
+    df2['src'] = v_df.groupby('trial').head(-1).xd.values
+    df2['dst'] = v_df.groupby('trial').tail(-1).xd.values
+    df2 = df2.value_counts().unstack().fillna(0).T
+    df2 += epsilon
+    df2 /= df2.sum()
+    A2 = df2.values
+    p2_arr = calc_stationary(A2)
 
   # control
-  r1_arr = 2*(c1_df.x>0).astype(int) - 1
-  r2_arr = 2*(c2_df.z<1).astype(int) - 1
-  h_arr = np.array([0.5])
-  Ap1, F = calc_A_prime(A1, r1_arr, h_arr, c1=c1_lo, c2=c2_lo)
-  Ap2, F = calc_A_prime(A2, r2_arr, h_arr, c1=c1_rs, c2=c2_rs)
-  q1_arr = calc_stationary(A1+Ap1)
-  q2_arr = calc_stationary(A2+Ap2)
+  r_arr = -np.ones(n)
+  idx1 = c_df[c_df.x < 1/4].sort_values('y').index[0]
+  idx2 = c_df[(c_df.x > 1/4) & (c_df.x < 1/2)].sort_values('y').index[0]
+  idx3 = c_df[(c_df.x > 1/2) & (c_df.x < 3/4)].sort_values('y').index[0]
+  idx4 = c_df[(c_df.x > 3/4)].sort_values('y').index[0]
+  r1_arr = r_arr.copy()
+  r2_arr = r_arr.copy()
+  r3_arr = r_arr.copy()
+  r4_arr = r_arr.copy()
+  r1_arr[idx1] = 1
+  r2_arr[idx2] = 1
+  r3_arr[idx3] = 1
+  r4_arr[idx4] = 1
+  dist_df = pd.DataFrame(distance.squareform(distance.pdist(c_df)))
+  exclude_list = dist_df[dist_df>0.5].stack().index.to_list()
+  h_arr = np.array([0.5, 0.8, 0.9])
+  Ap1, F = calc_A_prime(A, r1_arr, h_arr, c1=c1, c2=c2,
+                        exclude_list=exclude_list)
+  Ap2, F = calc_A_prime(A, r2_arr, h_arr, c1=c1, c2=c2,
+                        exclude_list=exclude_list)
+  Ap3, F = calc_A_prime(A, r3_arr, h_arr, c1=c1, c2=c2,
+                        exclude_list=exclude_list)
+  Ap4, F = calc_A_prime(A, r4_arr, h_arr, c1=c1, c2=c2,
+                        exclude_list=exclude_list)
+  q1_arr = calc_stationary(A+Ap1)
+  q2_arr = calc_stationary(A+Ap2)
+  q3_arr = calc_stationary(A+Ap3)
+  q4_arr = calc_stationary(A+Ap4)
+  max_val = np.concatenate([q1_arr, q2_arr, q3_arr, q4_arr]).max()
 
   # plot
-  fig = plt.figure(figsize=(10,8))
-  kws_ax = dict(projection='3d', computed_zorder=False)
-  ax1 = fig.add_subplot(221, **kws_ax)
-  ax2 = fig.add_subplot(222, **kws_ax)
-  ax3 = fig.add_subplot(223, **kws_ax)
-  ax4 = fig.add_subplot(224, **kws_ax)
-  axes = np.array([ax1, ax2, ax3, ax4])
+  fig, axes = plt.subplots(figsize=(12,12), ncols=3, nrows=3)
+  axes = axes.flatten()
   kws_title = dict(fontsize=16, pad=10)
   kws_label = dict(fontsize=20, fontweight='bold', ha='right', va='bottom')
-  kws_scat = dict(s=30, cmap='Blues', ec='k', lw=1)
-  kws_tick = dict(ha='center', va='center')
-  c_arr = sns.color_palette('tab10', n_color)
+  kws_label2 = dict(fontsize=16, ha='center', va='center', c='w',
+                    fontweight='bold')
 
-  def draw_arrow(ax, Ap, c_df):
+  def draw_voronoi(ax, vor, p_arr):
+    ax.scatter(*vor.points[:n].T, s=5, c='k', zorder=10)
+    ax.set_xlim((0,1))
+    ax.set_ylim((0,1))
+    for i in range(n):
+      pos = vor.vertices[vor.regions[vor.point_region[i]]]
+      ax.fill(*pos.T, alpha=p_arr[i]/max_val, color='C0')
+      ax.fill(*pos.T, color='none', ec='k', lw=1, zorder=10)
+
+  def draw_arrow(ax, Ap):
     for i in range(n):
       for j in range(n):
         if (i==j) or (Ap[i,j]==0):
           continue
-        x1, y1, z1 = c_df.loc[j]
-        x2, y2, z2 = c_df.loc[i]
-        ax.add_artist(Arrow3D(x1,y1,z1,x2-x1,y2-y1,z2-z1, arrowstyle='-|>',
-                              mutation_scale=10, color='C3'))
+        x1, y1 = c_df.loc[j]
+        x2, y2 = c_df.loc[i]
+        ax.arrow(x1, y1, x2-x1, y2-y1, color='C3', head_width=0.02,
+                 length_includes_head=True)
 
   ax = axes[0]
-  ax.plot(v1_df.x, v1_df.y, v1_df.z, lw=1, color='0.8')
-  for i in range(n):
-    sub_df = v1_df[v1_df.xd==i]
-    ax.scatter(sub_df.x, sub_df.y, sub_df.z, s=1, c=[c_arr[i%n_color]],
-               zorder=10)
-  ax.scatter(c1_df.x, c1_df.y, c1_df.z, s=10, c='k', zorder=20)
-  ax.set_title('Lorenz attractor (K-means partition)')
-  ax.text(-45, 0, 52, 'A', **kws_label)
+  i_arr = np.arange(n_grid)+0.5
+  sns.heatmap(U, ax=ax, cmap='viridis', vmin=-1, vmax=1)
+  format_colorbar(ax)
+  ax.invert_yaxis()
+  ax.set_xticks([0.5, n_grid//2-0.5, n_grid-0.5],[0,0.5,1],
+                rotation=0)
+  ax.set_yticks([0.5, n_grid//2-0.5, n_grid-0.5],[0,0.5,1])
+  for i in range(4):
+    ax.text((2*i+1)/8, 1/16, str(i+1), transform=ax.transAxes, **kws_label2)
+  ax.text(0.5, 15/16, '*', transform=ax.transAxes, **kws_label2)
+  ax.set_title('potential function', **kws_title)
+  ax.text(-0.18, 1.02, 'A', transform=ax.transAxes, **kws_label)
 
   ax = axes[1]
-  ax.scatter(c1_df.x, c1_df.y, c1_df.z, c=q1_arr, **kws_scat)
-  draw_arrow(ax, Ap1, c1_df)
-  ax.set_title('intervention to Lorenz attractor')
-  ax.text(-45, 0, 52, 'B', **kws_label)
+  for trial, sub_df in v_df.groupby('trial'):
+    ax.plot(sub_df.x, sub_df.y, lw=1, c='C0')
+  ax.set_xlim((0,1))
+  ax.set_ylim((0,1) )   
+  ax.set_title('trajectories', **kws_title)
+  ax.text(-0.18, 1.02, 'B', transform=ax.transAxes, **kws_label)
 
   ax = axes[2]
-  ax.plot(v2_df.x, v2_df.y, v2_df.z, lw=1, color='0.8')
-  for i in range(n):
-    sub_df = v2_df[v2_df.xd==i]
-    ax.scatter(sub_df.x, sub_df.y, sub_df.z, s=1, c=[c_arr[i%n_color]],
-               zorder=10)
-  ax.scatter(c2_df.x, c2_df.y, c2_df.z, s=10, c='k', zorder=20)
-  ax.set_title('R\u00f6ssler attractor (K-means partition)')
-  ax.text(-37, -20, 46, 'C', **kws_label)
+  draw_voronoi(ax, vor, p_arr)
+  ax.set_title('K-means partition', **kws_title)
+  ax.text(-0.18, 1.02, 'C', transform=ax.transAxes, **kws_label)
 
   ax = axes[3]
-  ax.scatter(c2_df.x, c2_df.y, c2_df.z, c=q2_arr, **kws_scat)
-  draw_arrow(ax, Ap2, c2_df)
-  ax.set_title('intervention to R\u00f6ssler attractor')
-  ax.text(-37, -20, 46, 'D', **kws_label)
+  draw_voronoi(ax, vor, q1_arr)
+  draw_arrow(ax, Ap1)
+  ax.set_title('control to target 1', **kws_title)
+  ax.text(-0.18, 1.02, 'D', transform=ax.transAxes, **kws_label)
+
+  ax = axes[4]
+  draw_voronoi(ax, vor, q2_arr)
+  draw_arrow(ax, Ap2)
+  ax.set_title('control to target 2', **kws_title)
+  ax.text(-0.18, 1.02, 'E', transform=ax.transAxes, **kws_label)
+
+  ax = axes[5]
+  draw_voronoi(ax, vor, q3_arr)
+  draw_arrow(ax, Ap3)
+  ax.set_title('control to target 3', **kws_title)
+  ax.text(-0.18, 1.02, 'F', transform=ax.transAxes, **kws_label)
+
+  ax = axes[6]
+  draw_voronoi(ax, vor, q4_arr)
+  draw_arrow(ax, Ap4)
+  ax.set_title('control to target 4', **kws_title)
+  ax.text(-0.18, 1.02, 'G', transform=ax.transAxes, **kws_label)
+
+  axes[7].axis('off')
+  axes[8].axis('off')
 
   for ax in axes:
-    ax.tick_params(pad=-0.5)
-    ax.set_xlabel('$x$', labelpad=-5)
-    ax.set_ylabel('$y$', labelpad=-5)
-    ax.set_zlabel('$z$', labelpad=-5)
-    ax.grid(False)
-    ax.set_box_aspect((1,1,1), zoom=1.2)
-    ax.view_init(elev=15, azim=-60)
-    for axis in [ax.xaxis, ax.yaxis, ax.zaxis]:
-      #axis.line.set_linewidth(1)
-      pass
+    ax.tick_params(length=5, width=1)
+    format_spine(ax)
+    ax.set_xlabel('$x$')
+    ax.set_ylabel('$y$')
 
-  for ax in axes[:2]:
-    ax.set_xticks([-15,0,15], ['$-15$',0,15], **kws_tick)
-    ax.set_yticks([-20,0,20], ['$-20$',0,20], **kws_tick)
-    ax.set_zticks([10,20,30,40], [10,20,30,40], **kws_tick)
-    ax.set_xlim((-20,20))
-    ax.set_ylim((-26,26))
-    ax.set_zlim((2,47))
-    
-  for ax in axes[2:]:
-    ax.set_xticks([-20,0,20], ['$-20$',0,20], **kws_tick)
-    ax.set_yticks([-20,0,20], ['$-20$',0,20], **kws_tick)
-    ax.set_zticks([0,10,20,30], [0,10,20,30], **kws_tick)
-    ax.set_xlim((-23,23))
-    ax.set_ylim((-23,23))
-    ax.set_zlim((-2,38))
-    
-  fig.subplots_adjust(left=0.05, top=0.95, bottom=0.05, right=0.95,
-                      hspace=0.25)
+  fig.tight_layout()
   fig.show()
   fig.savefig('tmp.png')
-  return v1_df
+  return vor
 
 if __name__ == '__main__':
   hoge = plot_fig08()
